@@ -1,28 +1,83 @@
 # Create a model to predict if a given image contains a hand or not.
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
+import pathlib
 import torch
 import torch.nn as nn
-import torch.nn.functional as functional
+import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data as data
 import torchvision
 from torchvision import transforms
-from PIL import Image
 
 
-class Flatten(nn.Module):
-    def forward(self, x):
-        N, C, H, W = x.size() # read in N, C, H, W
-        return x.view(N, -1)  # "flatten" the C * H * W values into a single vector per image
+
+def flatten(x: torch.Tensor) -> torch.Tensor:
+    N, C, H, W = x.size()  # read in N, C, H, W
+    return x.view(N, -1)  # "flatten" the C * H * W values into a single vector per image
+
 
 class ConvolutionalNet(nn.Module):
-    def __init__(self):
+    """
+    Architecture:
+    { [convultional layer] -> [batchnorm] -> [max pool] -> [ReLU] } x 3 -> [affine layer] -> ReLU -> [affine layer] -> [softmax]
+    """
+    def __init__(self, restore=False, restore_file='cache/state.pkl'):
         super().__init__()
+        restore_file_path = pathlib.Path(restore_file)
+        self._restore_file_path = restore_file_path
+
+        if restore:
+            if not restore_file_path.is_file():
+                raise TypeError('"{0}" is not a valid file'.format(restore_file))
+            with self._restore_file_path.open() as infile:
+                self.load(infile)
+
+        # architecture definition
+        self.conv_one = nn.Conv2d(3, 32, 3, stride=1, padding=1)
+        self.batch_norm_one = nn.BatchNorm2d(32)
+        self.conv_two = nn.Conv2d(32, 64, 3, stride=1, padding=1)
+        self.batch_norm_two = nn.BatchNorm2d(64)
+        self.conv_three = nn.Conv2d(64, 128, 3, stride=1, padding=1)
+        self.batch_norm_three = nn.BatchNorm2d(128)
+        self.affine_one = nn.Linear(8 * 8 * 128, 128)
+        self.affine_two = nn.Linear(128, 2)
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        pass
+        x = self.conv_one(x)
+        x = self.batch_norm_one(x)      # 32 x 64 x 64
+        x = F.max_pool2d(x, 2)          # 32 x 32 x 32
+        x = F.relu(x)
+
+        x = self.conv_two(x)
+        x = self.batch_norm_two(x)      # 64 x 32 x 32
+        x = F.max_pool2d(x, 2)          # 64 x 16 x 16
+        x = F.relu(x)
+
+        x = self.conv_three(x)
+        x = self.batch_norm_three(x)    # 128 x 16 x 16
+        x = F.max_pool2d(x, 2)          # 128 x 8 x 8
+        x = F.relu(x)
+
+        x = x.view(-1, 8 * 8 * 128)     # 8 x 8 x 128
+        x = self.affine_one(x)
+        x = F.relu(x)
+
+        x = self.affine_two(x)
+
+        return F.log_softmax(x, dim=1)
+
+
+    def save(self) -> None:
+        state = self.state_dict()
+        with self._restore_file_path.open('wb') as outfile:
+            torch.save(state, outfile)
+
+    def load(self, infile: open) -> None:
+        state = torch.load(infile)
+        self.load_state_dict(state)
+
 
 
 def load_image(path_to_image: str, dimensions=(32, 32)) -> np.ndarray:
@@ -31,38 +86,18 @@ def load_image(path_to_image: str, dimensions=(32, 32)) -> np.ndarray:
     return np.reshape(image, (3,) + dimensions)
 
 
-def load_image_directory(training_dir: str, test_dir: str):
-    mean = [0.5, 0.5, 0.5]
-    std = mean
-    transform = transforms.Compose([transforms.Resize((292, 292)),
-                                    transforms.ToTensor(),
-                                    transforms.Normalize(mean, std)])
+def load_image_directory(training_dir: str, test_dir: str, batch_size: int, dimensions=(32, 32)):
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
+    transform = transforms.Compose([transforms.Resize(dimensions),
+                                    transforms.ToTensor(),])
+                                    # transforms.Normalize(mean, std)])
 
     training_set = torchvision.datasets.ImageFolder(training_dir, transform=transform)
-    training_loader = data.DataLoader(training_set, batch_size=1, shuffle=False, num_workers=2)
+    training_loader = data.DataLoader(training_set, batch_size=batch_size, shuffle=False, num_workers=2)
 
     test_set = torchvision.datasets.ImageFolder(test_dir, transform=transform)
-    test_loader = data.DataLoader(test_set, batch_size=1, shuffle=False, num_workers=1)
-
-    ground_truths = ('hand', 'other')
-
-    return training_set, training_loader, test_set, test_loader
-
-
-def load_cifar10() -> ('DataLoader',):
-    mean = [0.5, 0.5, 0.5]
-    std = mean
-    transform = transforms.Compose([transforms.ToTensor(),
-                                    transforms.Normalize(mean, std)])
-
-    training_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=False, transform=transform)
-    training_loader = torch.utils.data.DataLoader(training_set, batch_size=4, shuffle=True, num_workers=2)
-
-    test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=False, transform=transform)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size=4, shuffle=False, num_workers=2)
-
-    classes = ('plane', 'car', 'bird', 'cat',
-               'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+    test_loader = data.DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=1)
 
     return training_set, training_loader, test_set, test_loader
 
@@ -71,7 +106,6 @@ def train(classifier: nn.Module, loader, criterion: nn.modules.loss, optimizer: 
     for epoch in range(epochs):
         running_loss = 0.0
         for i, data in enumerate(loader, 0):
-            # get the inputs
             inputs, labels = data
 
             # zero the parameter gradients
@@ -90,60 +124,38 @@ def train(classifier: nn.Module, loader, criterion: nn.modules.loss, optimizer: 
                 running_loss = 0.0
 
 
-
-def imshow(img):
-    img = img / 2 + 0.5     # unnormalize
-    npimg = img.numpy()
-    plt.imshow(np.transpose(npimg, (1, 2, 0)))
-    plt.show()
-
-
-
 def train_net():
-    training_set, training_loader, test_set, test_loader = load_image_directory('data/test', 'data/test')
+    training_set, training_loader, test_set, test_loader = load_image_directory('data/preprocessed', 'data/test', 4, dimensions=(64, 64))
 
-    # net = ConvolutionalNet()
-    # criterion = nn.CrossEntropyLoss()
-    # optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
-
-    net = nn.Sequential(Flatten(),
-                        nn.Linear(255792, 2))
+    net = ConvolutionalNet()
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
-    train(net, training_loader, criterion=criterion, optimizer=optimizer, epochs=1)
+    train(net, training_loader, criterion=criterion, optimizer=optimizer, epochs=5)
 
     return net
 
 
 if __name__ == '__main__':
-    # training_set, training_loader, test_set, test_loader = load_cifar10()
-    training_set, training_loader, test_set, test_loader = load_image_directory('data/test', 'data/test')
+    # net = nn.Sequential(Flatten(),
+    #                     nn.Linear(255792, 2),
+    #                     nn.ReLU())
 
-    # net = ConvolutionalNet()
-    # criterion = nn.CrossEntropyLoss()
-    # optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+    batch_size = 4
+    # training_set, training_loader, test_set, test_loader = load_image_directory('data/preprocessed', 'data/test', batch_size)
+    net = train_net()
 
-    net = nn.Sequential(Flatten(),
-                        nn.Linear(255792, 2),
-                        nn.ReLU())
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
-    train(net, training_loader, criterion=criterion, optimizer=optimizer, epochs=1)
-
-    dataiter = iter(test_loader)
-    images, labels = dataiter.next()
-    # imshow(torchvision.utils.make_grid(images))
-    print(labels)
-
-    image = load_image('data/test/hand/281L.jpg', dimensions=(292, 292))
-    print(image.shape)
-    # image = load_image('data/test/other/20160202_080815000_iOS.png', dimensions=(292, 292))
-    image = torch.Tensor([image])
-
+    image = load_image('data/preprocessed/hand/281L.jpg', dimensions=(64, 64))
+    image = torch.Tensor(image)
+    image = image.unsqueeze(0)
+    # print(image.shape)
+    # # image = load_image('data/test/other/20160202_080815000_iOS.png', dimensions=(292, 292))
+    # image = torch.Tensor([image])
+    #
     outputs = net(image)
     _, predicted = torch.max(outputs, 1)
-    print(predicted)
-
+    ground_truths = ('hand', 'other')
+    print(', '.join([ground_truths[predicted[i]] for i in range(1)]))
+    #
     # print('Predicted: ', ' '.join('%5s' % classes[predicted[j]]
     #                               for j in range(4)))
 
