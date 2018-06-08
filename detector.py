@@ -1,4 +1,3 @@
-# Create a model to predict if a given image contains a hand or not.
 import cv2
 import numpy as np
 import pathlib
@@ -17,20 +16,22 @@ def flatten(x: torch.Tensor) -> torch.Tensor:
     return x.view(N, -1)  # "flatten" the C * H * W values into a single vector per image
 
 
-class ConvolutionalNet(nn.Module):
+class HandDetectorNet(nn.Module):
     """
+    Convolutional neural network to determine whether or not a given image contains a hand.
+
     Architecture:
-    { [convultional layer] -> [batchnorm] -> [max pool] -> [ReLU] } x 3 -> [affine layer] -> ReLU -> [affine layer] -> [softmax]
+    { [convolutional layer] -> [batchnorm] -> [max pool] -> [ReLU] } x 3 -> [affine layer] -> ReLU -> [affine layer] -> [softmax]
     """
-    def __init__(self, restore=False, restore_file='cache/state.pkl'):
+    def __init__(self, restore=False, outfile='cache/state.pkl'):
         super().__init__()
-        restore_file_path = pathlib.Path(restore_file)
-        self._restore_file_path = restore_file_path
+        outfile_path = pathlib.Path(outfile)
+        self._outfile_path = outfile_path
 
         if restore:
-            if not restore_file_path.is_file():
-                raise TypeError('"{0}" is not a valid file'.format(restore_file))
-            with self._restore_file_path.open() as infile:
+            if not outfile_path.is_file():
+                raise TypeError('"{0}" is not a valid file'.format(outfile))
+            with self._outfile_path.open() as infile:
                 self.load(infile)
 
         # architecture definition
@@ -60,7 +61,7 @@ class ConvolutionalNet(nn.Module):
         x = F.max_pool2d(x, 2)          # 128 x 8 x 8
         x = F.relu(x)
 
-        x = x.view(-1, 8 * 8 * 128)     # 8 x 8 x 128
+        x = x.view(-1, 8 * 8 * 128)     # flatten; 8 x 8 x 128
         x = self.affine_one(x)
         x = F.relu(x)
 
@@ -71,7 +72,7 @@ class ConvolutionalNet(nn.Module):
 
     def save(self) -> None:
         state = self.state_dict()
-        with self._restore_file_path.open('wb') as outfile:
+        with self._outfile_path.open('wb') as outfile:
             torch.save(state, outfile)
 
     def load(self, infile: open) -> None:
@@ -86,7 +87,7 @@ def load_image(path_to_image: str, dimensions=(32, 32)) -> np.ndarray:
     return np.reshape(image, (3,) + dimensions)
 
 
-def load_image_directory(training_dir: str, test_dir: str, batch_size: int, dimensions=(32, 32)):
+def load_image_directory(training_dir: str, test_dir: str, batch_size: int, dimensions=(32, 32)) -> (data.Dataset, data.DataLoader, data.Dataset, data.DataLoader):
     mean = [0.485, 0.456, 0.406]
     std = [0.229, 0.224, 0.225]
     transform = transforms.Compose([transforms.Resize(dimensions),
@@ -102,34 +103,31 @@ def load_image_directory(training_dir: str, test_dir: str, batch_size: int, dime
     return training_set, training_loader, test_set, test_loader
 
 
-def train(classifier: nn.Module, loader, criterion: nn.modules.loss, optimizer: optim, epochs=1, print_every=2000):
+def train(classifier: nn.Module, loader: data.DataLoader, criterion: nn.modules.loss, optimizer: optim.Optimizer, epochs=1, print_every=2000) -> None:
     for epoch in range(epochs):
         running_loss = 0.0
         for i, data in enumerate(loader, 0):
             inputs, labels = data
-
-            # zero the parameter gradients
             optimizer.zero_grad()
 
-            # forward + backward + optimize
             outputs = classifier(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
 
-            # print statistics
             running_loss += loss.item()
             if i % print_every == print_every - 1:
                 print('[{0}, {1}] loss: {2}'.format(epoch + 1, i + 1, running_loss / print_every))
                 running_loss = 0.0
 
 
-def train_net():
+def train_net() -> nn.Module:
     training_set, training_loader, test_set, test_loader = load_image_directory('data/preprocessed', 'data/test', 4, dimensions=(64, 64))
 
-    net = ConvolutionalNet()
+    net = HandDetectorNet()
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+    # optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+    optimizer = optim.Adam(net.parameters(), lr=1e-3)
     train(net, training_loader, criterion=criterion, optimizer=optimizer, epochs=5)
 
     return net

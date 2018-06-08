@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import torch
 from detector import train_net
-import preprocess
+from preprocess import create_background_subtractor
 
 
 def capture_background_image(capturer: cv2.VideoCapture, dimensions=(64, 64), skip=15) -> np.ndarray:
@@ -12,10 +12,10 @@ def capture_background_image(capturer: cv2.VideoCapture, dimensions=(64, 64), sk
     `skip` is the number of frames to skip before capturing the image, to allow for pre-focusing.
     """
     for i in range(skip):
-        _ = capturer.read()
+        capturer.read()
     ret, frame = capturer.read()
     image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    image = cv2.resize(image, dsize=dimensions)
+    # image = cv2.resize(image, dsize=dimensions)
     return image
 
 
@@ -33,18 +33,18 @@ def track_background_subtract(predict_every=10):
     i = 1
     net = train_net()
     capturer = cv2.VideoCapture(0)
-    model = cv2.createBackgroundSubtractorMOG2(history=2, detectShadows=False)
+    model = create_background_subtractor()
     background = capture_background_image(capturer)
     model.apply(background)
 
     while capturer.isOpened():
         ret, frame = capturer.read()
-        image = frame
-        if i >= predict_every and i % predict_every == 0:
+
+        if i % predict_every == 0:
             image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             image = cv2.resize(image, dsize=dimensions)
             image = model.apply(image)
-            image = np.stack((image,) * 3, -1)
+            image = np.stack((image,) * 3, -1)  # make image have 3 channels (necessary for 1st convolutional layer)
             image = np.reshape(image, (3, 64, 64))
             image = torch.Tensor(image)
             image.unsqueeze_(0)
@@ -60,7 +60,6 @@ def track_background_subtract(predict_every=10):
 
     capturer.release()
     cv2.destroyAllWindows()
-
 
 
 if __name__ == '__main__':
