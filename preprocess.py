@@ -129,6 +129,50 @@ def crop_hw3_images(indir: str, outdir: str, padding=0, limit=0) -> None:
         i += 1
 
 
+def draw_bounding_boxes(indir: str, outdir: str, padding=0, limit=0) -> None:
+    """
+    Draws a bounding box around the hand in each image from Assignment 3 dataset
+    Location of only the hand is determined through the minimum and maximum x/y coordinates of the joint labellings.
+    For each image, left (_L) and right (_R) images are saved to `outdir` (each untouched image has 2 hands in it) -
+    i.e., 2 * `limit` images will be generated.
+    Expects `indir` to be a directory containing:
+      - annotation.json
+      - Color/ (a subdirectory containing all the untouched images)
+    `outdir` is the directory to save all cropped images.
+    `padding` is the number of pixels appended to each images' border, in case annotation data is too narrow.
+    `limit` is the number of untouched images to process. If <= 0, all images will be processed.
+    """
+    root = pathlib.Path(indir)
+    assert root.is_dir(), 'expected directory "{0}" to exist, with "annotation.json" and "Color/" within.'.format(indir)
+
+    annotations = {}
+    with open('{0}/annotation.json'.format(root)) as infile:
+        annotations = json.load(infile)
+
+    extension = 'jpg'
+    i = 0
+    for name, data in annotations.items():
+        if limit > 0 and i >= limit:
+            break
+
+        min_x, min_y = math.inf, math.inf
+        max_x, max_y = 0, 0
+        for x, y in data:
+            min_x = min(x, min_x)
+            min_y = min(y, min_y)
+            max_x = max(x, max_x)
+            max_y = max(y, max_y)
+
+        full_size_image_name = name[:-2]    # ignore '_L', '_R'
+        # normalize (relative) location strings by initializing as Path objects
+        image_path = pathlib.Path('{0}/Color/{1}.{2}'.format(root, full_size_image_name, extension))
+        write_path = pathlib.Path('{0}/{1}.{2}'.format(outdir, name, extension))
+
+        image = cv2.imread(str(image_path))
+        cv2.rectangle(image, (int(min_x), int(min_y)), (int(max_x), int(max_y)), (0, 255, 0), thickness=5) 
+        cv2.imwrite(str(write_path), image)
+        i += 1
+
 if __name__ == '__main__':
     pass
     ###
@@ -166,3 +210,4 @@ if __name__ == '__main__':
     #     mask = model.apply(image)
     #     cv2.imshow('frame', mask)
     #     cv2.waitKey(0)
+    draw_bounding_boxes("data/Dataset","data/BoundData")
