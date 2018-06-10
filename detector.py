@@ -10,10 +10,9 @@ import torchvision
 from torchvision import transforms
 
 
-
-def flatten(x: torch.Tensor) -> torch.Tensor:
-    N, C, H, W = x.size()  # read in N, C, H, W
-    return x.view(N, -1)  # "flatten" the C * H * W values into a single vector per image
+# def flatten(x: torch.Tensor) -> torch.Tensor:
+#     N, C, H, W = x.size()  # read in N, C, H, W
+#     return x.view(N, -1)  # "flatten" the C * H * W values into a single vector per image
 
 
 class HandDetectorNet(nn.Module):
@@ -25,14 +24,6 @@ class HandDetectorNet(nn.Module):
     """
     def __init__(self, restore=False, outfile='cache/state.pkl'):
         super().__init__()
-        outfile_path = pathlib.Path(outfile)
-        self._outfile_path = outfile_path
-
-        if restore:
-            if not outfile_path.is_file():
-                raise TypeError('"{0}" is not a valid file'.format(outfile))
-            with self._outfile_path.open() as infile:
-                self.load(infile)
 
         # architecture definition
         self.conv_one = nn.Conv2d(3, 32, 3, stride=1, padding=1)
@@ -43,6 +34,14 @@ class HandDetectorNet(nn.Module):
         self.batch_norm_three = nn.BatchNorm2d(128)
         self.affine_one = nn.Linear(8 * 8 * 128, 128)
         self.affine_two = nn.Linear(128, 2)
+
+        outfile_path = pathlib.Path(outfile)
+        self._outfile_path = outfile_path
+        if restore:
+            if not outfile_path.is_file():
+                raise TypeError('"{0}" is not a valid file'.format(outfile))
+            with self._outfile_path.open('rb') as infile:
+                self.load(infile)
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
