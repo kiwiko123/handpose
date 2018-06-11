@@ -85,6 +85,11 @@ def generate_bbox_file(datapath, labelpath, classid, classname):
 #     print("generating %d %s" %(id, classid2name[id]))
 #     generate_bbox_file(datapath, labelpath, id, classid2name[id])
 
+
+# constants for calculations
+imgW = 1920 #our input images have the same dimensions
+imgH = 1080
+
 def convert_yolo_annotations(indir: str, outdir: str, padding=0, limit=0) -> None:
     """
     Crops untouched images from the Assignment 3 dataset to show only hands.
@@ -141,10 +146,13 @@ def convert_yolo_annotations(indir: str, outdir: str, padding=0, limit=0) -> Non
             """
                 We need this format:
                 <object-class-id> <x> <y> <width> <height>
-                Where <x> and <y> are coords of center of box
-                <object-class-id> in an int
+                Where   
+                    <x> and <y> are coords of center of box
+                    <object-class-id> in an int
+                    <x> <y> <width> <height> are floats from 0.0 to 1.0 inclusive
+
             """
-            imgW, imgH = Image.open(name).size
+
             dW = 1.0 / imgW
             dH = 1.0 / imgH
 
@@ -155,10 +163,10 @@ def convert_yolo_annotations(indir: str, outdir: str, padding=0, limit=0) -> Non
 
             classID = 0 # we only have the hand class to look for
 
-            # print("{:}: {:} {:} {:} {:} {:}\n".format(fileName, classID, x, y, w, h))
+            print("{:}: {:} {:} {:} {:} {:}\n".format(fileName, classID, x, y, w, h))
             yoloOutputFile.write("{:} {:} {:} {:} {:}\n".format(classID, x, y, w, h))
             i += 1
         yoloOutputFile.close()
 
 # Create all bounding box files in Yolo format: 
-# convert_yolo_annotations(r"../Dataset", "", 0, 0)
+# convert_yolo_annotations(r"../Dataset", "", padding=0, limit=10)
