@@ -158,4 +158,4 @@ def convert_yolo_annotations(indir: str, outdir: str, padding=0, limit=0) -> Non
         yoloOutputFile.close()
 
 # Create all bounding box files in Yolo format: 
-# crop_hw3_images(r"../Dataset", "", 0, 0)
+# convert_yolo_annotations(r"../Dataset", "", 0, 0)
