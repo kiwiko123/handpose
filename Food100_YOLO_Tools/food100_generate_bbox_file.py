@@ -14,6 +14,13 @@
 import os
 from PIL import Image
 
+# import cv2  
+import json
+import numpy as np
+import math
+import pathlib
+
+
 # modify the directories and class file to fit
 datapath = 'images'
 labelpath = 'labels'
@@ -65,16 +72,90 @@ def generate_bbox_file(datapath, labelpath, classid, classname):
                     f.close()
         fp.close()
 
-classid = 0
-classid2name = {}
-if os.path.exists(classfilename):
-    with open(classfilename) as cf:
-        for line in cf.readlines():
-            classname = line.strip('\n')
-            classid = classid + 1
-            classid2name[classid] = classname
+# classid = 0
+# classid2name = {}
+# if os.path.exists(classfilename):
+#     with open(classfilename) as cf:
+#         for line in cf.readlines():
+#             classname = line.strip('\n')
+#             classid = classid + 1
+#             classid2name[classid] = classname
 
-for id in classid2name.keys():
-    print("generating %d %s" %(id, classid2name[id]))
-    generate_bbox_file(datapath, labelpath, id, classid2name[id])
+# for id in classid2name.keys():
+#     print("generating %d %s" %(id, classid2name[id]))
+#     generate_bbox_file(datapath, labelpath, id, classid2name[id])
 
+def convert_yolo_annotations(indir: str, outdir: str, padding=0, limit=0) -> None:
+    """
+    Crops untouched images from the Assignment 3 dataset to show only hands.
+    Location of only the hand is determined through the minimum and maximum x/y coordinates of the joint labellings.
+    For each image, left (_L) and right (_R) images are saved to `outdir` (each untouched image has 2 hands in it) -
+    i.e., 2 * `limit` images will be generated.
+    Expects `indir` to be a directory containing:
+      - annotation.json
+      - Color/ (a subdirectory containing all the untouched images)
+
+    `outdir` is the directory to save all cropped images.
+    `padding` is the number of pixels appended to each images' border, in case annotation data is too narrow.
+    `limit` is the number of untouched images to process. If <= 0, all images will be processed.
+    """
+    root = pathlib.Path(indir)
+    assert root.is_dir(), 'expected directory "{0}" to exist, with "annotation.json" and "Color/" within.'.format(indir)
+
+    annotations = {}
+    with open('{0}/annotation.json'.format(root)) as infile:
+        annotations = json.load(infile)
+
+    extension = 'jpg'
+    i = 0
+    imgFiles = os.listdir(os.path.join(indir, "Color"))
+
+    # for name, data in annotations.items():
+    for name in imgFiles:
+        fileName, ext = name.split(".")
+
+        annotationsForFile = []
+        annotations.get(fileName + "_L") and annotationsForFile.append(annotations.get(fileName + "_L"))
+        annotations.get(fileName + "_R") and annotationsForFile.append(annotations.get(fileName + "_R"))
+
+        write_path = pathlib.Path('{0}/Color/{1}.txt'.format(indir, fileName)) 
+        yoloOutputFile = open(write_path, "w")
+
+        for index, data in enumerate(annotationsForFile):
+            if limit > 0 and i >= limit:
+                return
+
+            min_x, min_y = math.inf, math.inf
+            max_x, max_y = 0, 0
+            for x, y in data:
+                min_x = min(x, min_x)
+                min_y = min(y, min_y)
+                max_x = max(x, max_x)
+                max_y = max(y, max_y)
+
+            min_x -= padding
+            min_y -= padding
+            max_x += padding
+            max_y += padding
+
+            """
+                We need this format:
+                <object-class-id> <x> <y> <width> <height>
+                Where <x> and <y> are coords of center of box
+                <object-class-id> in an int
+            """
+
+            x = (int(min_x) + int(max_x))/2.0
+            y = (int(min_y) + int(max_y))/2.0
+            w = abs(int(max_x) - int(min_x))
+            h = abs(int(max_y) - int(min_y))
+
+            classID = 0 # we only have the hand class to look for
+
+            # print("{:}: {:} {:} {:} {:} {:}\n".format(fileName, classID, x, y, w, h))
+            yoloOutputFile.write("{:} {:} {:} {:} {:}\n".format(classID, x, y, w, h))
+            i += 1
+        yoloOutputFile.close()
+
+# Create all bounding box files in Yolo format: 
+# crop_hw3_images(r"../Dataset", "", 0, 0)
