@@ -144,11 +144,14 @@ def convert_yolo_annotations(indir: str, outdir: str, padding=0, limit=0) -> Non
                 Where <x> and <y> are coords of center of box
                 <object-class-id> in an int
             """
+            imgW, imgH = Image.open(name).size
+            dW = 1.0 / imgW
+            dH = 1.0 / imgH
 
-            x = (int(min_x) + int(max_x))/2.0
-            y = (int(min_y) + int(max_y))/2.0
-            w = abs(int(max_x) - int(min_x))
-            h = abs(int(max_y) - int(min_y))
+            x = (int(min_x) + int(max_x)) / 2.0 * dW
+            y = (int(min_y) + int(max_y)) / 2.0 * dH
+            w = abs(int(max_x) - int(min_x)) * dW
+            h = abs(int(max_y) - int(min_y)) * dH
 
             classID = 0 # we only have the hand class to look for
 
