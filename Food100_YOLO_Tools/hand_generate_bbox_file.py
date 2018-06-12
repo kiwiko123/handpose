@@ -163,10 +163,10 @@ def convert_yolo_annotations(indir: str, outdir: str, padding=0, limit=0) -> Non
 
             classID = 0 # we only have the hand class to look for
 
-            print("{:}: {:} {:} {:} {:} {:}\n".format(fileName, classID, x, y, w, h))
+            # print("{:}: {:} {:} {:} {:} {:}\n".format(fileName, classID, x, y, w, h))
             yoloOutputFile.write("{:} {:} {:} {:} {:}\n".format(classID, x, y, w, h))
             i += 1
         yoloOutputFile.close()
 
 # Create all bounding box files in Yolo format: 
-# convert_yolo_annotations(r"../Dataset", "", padding=0, limit=10)
+convert_yolo_annotations(r"../Dataset", "", padding=0, limit=0)
