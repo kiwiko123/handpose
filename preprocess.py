@@ -35,11 +35,14 @@ def background_separate_image(image: np.ndarray, grayscale=True, inverter=cv2.TH
     return cv2.medianBlur(thresholded, 5)
 
 
-def preprocess_grayscale(root: pathlib.Path, outdir: pathlib.Path, dimensions=(64, 64)) -> None:
+def preprocess_grayscale(root: str, outdir: str, dimensions=None) -> None:
+    root = pathlib.Path(root)
+    outdir = pathlib.Path(outdir)
     for image_file in root.iterdir():
         image = cv2.imread(str(image_file), 0)
         if image is not None:
-            image = cv2.resize(image, dsize=dimensions)
+            if dimensions:
+                image = cv2.resize(image, dsize=dimensions)
             outfile = pathlib.Path('{0}/{1}'.format(outdir, image_file.name))
             cv2.imwrite(str(outfile), image)
 
@@ -162,6 +165,10 @@ def draw_bounding_boxes(indir: str, outdir: str, padding=0, limit=0) -> None:
             min_y = min(y, min_y)
             max_x = max(x, max_x)
             max_y = max(y, max_y)
+        min_x -= padding
+        min_y -= padding
+        max_x += padding
+        max_y += padding
 
         full_size_image_name = name[:-2]    # ignore '_L', '_R'
         # normalize (relative) location strings by initializing as Path objects
@@ -169,16 +176,24 @@ def draw_bounding_boxes(indir: str, outdir: str, padding=0, limit=0) -> None:
         write_path = pathlib.Path('{0}/{1}.{2}'.format(outdir, name, extension))
 
         image = cv2.imread(str(image_path))
-        cv2.rectangle(image, (int(min_x), int(min_y)), (int(max_x), int(max_y)), (0, 255, 0), thickness=5) 
+        green = (0, 255, 0)
+        cv2.rectangle(image, (int(min_x), int(min_y)), (int(max_x), int(max_y)), green, thickness=5)
         cv2.imwrite(str(write_path), image)
         i += 1
+
 
 if __name__ == '__main__':
     pass
     ###
+    ### Make a directory of images grayscale.
+    ###
+    # preprocess_grayscale('./data/preprocessed_hw3/train/hand', './data/preprocessed_hw3/train/hand')
+
+    ###
     ### Crop Assignment 3 images. No need to run this more than once!
     ###
     # crop_hw3_images('./data/Dataset', './data/preprocessed_hw3/hand', padding=5, limit=500)
+    draw_bounding_boxes("data/Dataset", "data/preprocessed_hw3/train", padding=10, limit=100)
 
 
     ##
@@ -210,4 +225,3 @@ if __name__ == '__main__':
     #     mask = model.apply(image)
     #     cv2.imshow('frame', mask)
     #     cv2.waitKey(0)
-    draw_bounding_boxes("data/Dataset","data/BoundData")

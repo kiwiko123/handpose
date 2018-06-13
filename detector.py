@@ -1,7 +1,6 @@
 import collections
 import cv2
 import numpy as np
-import math
 import pathlib
 import torch
 import torch.nn as nn
@@ -15,10 +14,6 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True  # avoid error "OSError: broken data stre
 import scipy.special
 from dataset import BoundedHandsDataset
 
-
-def flatten(x: torch.Tensor) -> torch.Tensor:
-    N, C, H, W = x.size()  # read in N, C, H, W
-    return x.view(N, -1)  # "flatten" the C * H * W values into a single vector per image
 
 
 class SaveableNet(nn.Module):
@@ -82,6 +77,9 @@ class YOLOv2Net(SaveableNet):
     8. Convolution    3×3      1      (13, 13, 1024)
     9. Convolution    1×1      1      (13, 13, 125)
     ---------------------------------------------
+
+    Source:
+    http://machinethink.net/blog/object-detection-with-yolo/
     """
     def __init__(self, restore=False, weight_file='default'):
         """
@@ -198,7 +196,14 @@ def load_image_directory(training_dir: str, test_dir: str, batch_size: int, dime
     return training_set, training_loader, test_set, test_loader
 
 
-def normalize_tx(x, threshold=1e-10):
+def normalize_tx(x: float, threshold=1e-10) -> float:
+    """
+    Normalize a given number so that it can be passed to the logit function.
+    The logit is the inverse of the sigmoid function, and only accepts values in the range (0, 1).
+    `threshold` is used to determine the closest value within the bounds.
+
+    Returns the normalized x.
+    """
     max_threshold = 1 - threshold
     x = max(x, threshold)
     x = min(x, max_threshold)
@@ -207,6 +212,13 @@ def normalize_tx(x, threshold=1e-10):
 
 
 def reconstruct_ground_truth_labels(features: torch.Tensor, signed_regions: [[float]], ground_truth_bounding_boxes: (float,), threshold=1e-10) -> torch.Tensor:
+    """
+    Alters `features` by comparing its incorrect predictions with the ground-truth labels.
+    Ensure that `features` is a `clone()` of the net's output.
+    Pass this as the second argument to the loss function for learning.
+
+    Returns the updates features tensor.
+    """
     anchors = [1.08, 1.19, 3.42, 4.41, 6.63, 11.38, 9.42, 5.11, 16.62, 10.52]
     batch_size = features.size(0)
     features = features.data.numpy()
@@ -223,27 +235,32 @@ def reconstruct_ground_truth_labels(features: torch.Tensor, signed_regions: [[fl
                 for b in range(5):
                     channel = b * 7
 
+                    # if the "grid" at (cx, cy) does not contain a hand,
+                    # assign it a value of -2.5.
+                    # Sigmoid(-2.5) ~ 0.07, indicating a very low confidence.
                     if signed_regions[batch, cx, cy] == 0:
-                        features[batch, channel + 4, cx, cy] = -5
+                        features[batch, channel + 4, cx, cy] = -10
+                        # features[batch, channel + 4, cx, cy] = -2.5
 
+                    # otherwise, the bounding box is around the grid at (cx, cy).
                     else:
-                        features[batch, channel + 4, cx, cy] = 100
+                        features[batch, channel + 4, cx, cy] = 7.5
+                        # features[batch, channel + 4, cx, cy] = 7.5
 
+                        # the logit function is the inverse of the sigmoid function.
+                        # reverse-engineer the calculations done in `bounding_box()` based on the ground-truth coordinates.
                         tx = mid_x / 32
                         tx -= cx
-                        tx = normalize_tx(tx)
-                        tx = scipy.special.logit(tx)
-                        features[batch, channel + 0, cx, cy] = tx
+                        tx = normalize_tx(tx, threshold=threshold)
+                        features[batch, channel + 0, cx, cy] = scipy.special.logit(tx)
 
                         ty = mid_y / 32
                         ty -= cy
-                        ty = normalize_tx(ty)
-                        ty = scipy.special.logit(ty)
-                        features[batch, channel + 1, cx, cy] = ty
+                        ty = normalize_tx(ty, threshold=threshold)
+                        features[batch, channel + 1, cx, cy] = scipy.special.logit(ty)
 
-                        if any(math.isnan(i) for i in (tx, ty)):
-                            raise ValueError
-
+                        # similarly, the natural logarithm is the inverse of the exponential function,
+                        # which is applied to `tw` and `th` in `bounding_box()`.
                         tw = width / 32
                         tw /= anchors[2 * b]
                         features[batch, channel + 2, cx, cy] = np.log(tw)
@@ -255,15 +272,28 @@ def reconstruct_ground_truth_labels(features: torch.Tensor, signed_regions: [[fl
     return torch.Tensor(features)
 
 
-def bounding_box(outputs):
+def bounding_box(outputs: torch.Tensor) -> [(float, (int,))]:
+    """
+    Computes the predicted confidence score and bounding box coordinates from `outputs`.
+    `outputs` is the Tensor predicted by a net.
+
+    Results are returned as a list (deque) of tuples, where each tuple is in the format:
+      `(confidence_score, (top_left_x, top_left_y, bottom_right_x, bottom_right_y))`
+    where the inner tuple represents the bounding box coordinates.
+
+    The most confident score is maintained throughout the calculations,
+    and will always be the first element in the returned list.
+
+    Source:
+    http://machinethink.net/blog/object-detection-with-yolo/
+    """
     anchors = [1.08, 1.19, 3.42, 4.41, 6.63, 11.38, 9.42, 5.11, 16.62, 10.52]
     predictions = collections.deque()
     most_accurate = ()
     batches = outputs.size(0)
     for batch in range(batches):
         features = outputs[batch]
-        features = features.permute(0, 1, 2)    # reshape to (35x13x13)
-        # features = features.view(35 * 13 * 13, -1)
+        # features = features.permute(0, 1, 2)    # reshape to (35x13x13)
         for cy in range(13):
             for cx in range(13):
                 for b in range(5):
@@ -306,6 +336,12 @@ def bounding_box(outputs):
 
 
 def train(classifier: nn.Module, loader: data.DataLoader, criterion: nn.modules.loss, optimizer: optim.Optimizer, epochs=1, print_every=-1) -> None:
+    """
+    Performs the actual training of `classifier`.
+    This is a generic function that will work with any PyTorch-compatible parameters.
+
+    `criterion` is the loss function.
+    """
     for epoch in range(epochs):
         running_loss = 0.0
         for i, data in enumerate(loader, 0):
@@ -331,15 +367,19 @@ def train(classifier: nn.Module, loader: data.DataLoader, criterion: nn.modules.
 
 
 
-def train_net(net: SaveableNet, dimensions=(416, 416)) -> nn.Module:
-    batch_size = 16
-    epochs = 5
+def train_net(net: SaveableNet, batch_size: int, epochs=10, dimensions=(416, 416)) -> SaveableNet:
+    """
+    Quick function to train a new net.
+    Assesses loss through mean-squared error (MSE).
+    Optimizes through stochastic gradient descent (SGD),
+    which we determined performs much better than Adam.
+
+    Returns `net`, trained.
+    """
     training_set, training_loader, test_set, test_loader = load_image_directory('data/preprocessed_hw3/train', 'data/preprocessed_hw3/test', batch_size=batch_size, dimensions=dimensions)
 
-    # criterion = nn.CrossEntropyLoss()
     criterion = nn.MSELoss()
-
-    optimizer = optim.SGD(net.parameters(), lr=1e-3, momentum=0.9)
+    optimizer = optim.SGD(net.parameters(), lr=1e-5, momentum=0.9)
     # optimizer = optim.Adam(net.parameters(), lr=1e-5)
     train(net, training_loader, criterion=criterion, optimizer=optimizer, epochs=epochs, print_every=1)
 
@@ -348,10 +388,12 @@ def train_net(net: SaveableNet, dimensions=(416, 416)) -> nn.Module:
 
 
 if __name__ == '__main__':
+    batch_size = 16
+    epochs = 8
     dimensions = (416, 416)
     model = YOLOv2Net()
     model.mode = 'train'
-    net = train_net(model, dimensions=dimensions)
+    net = train_net(model, batch_size, epochs=epochs, dimensions=dimensions)
     net.save()
 
     # net = YOLOv2Net(restore=True)
@@ -368,7 +410,6 @@ if __name__ == '__main__':
     outputs = net(image)
     print(outputs)
     p = bounding_box(outputs)
-    # p = non_max_suppress(p, 0.5)
 
     for confidence, coordinates in sorted(p, key=lambda e: e[0], reverse=True):
     # confidence, coordinates = max(p, key=lambda e: e[0])

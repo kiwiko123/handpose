@@ -1,4 +1,3 @@
-import cv2
 import numpy as np
 import torch
 import torch.utils.data as data
@@ -9,6 +8,12 @@ from PIL import Image
 
 
 class BoundedHandsDataset(data.Dataset):
+    """
+    Custom dataset tailored for the images from Assignment 3.
+    `root` is the directory which directly houses images of hands. These must be the images denoted in `annotations_file`.
+    `annotations_file` is the path to "annotation.json", included in the Assignment 3 dataset.
+    Pass this dataset into a `torch.utils.data.DataLoader` object for training.
+    """
     def __init__(self, root: str, annotations_file: str, batch_size: int, dimensions: (int, int), transform=None):
         with open(annotations_file) as infile:
             self._annotations = json.load(infile)
@@ -49,8 +54,7 @@ class BoundedHandsDataset(data.Dataset):
                   # 'image_path': pathlib.Path(image_path),
                   'bounding_box': ground_truth_bounding_box,
                   'annotations': coordinates,
-                  'signed_regions': signed_regions,
-                  'labels': labels}
+                  'signed_regions': signed_regions}
 
         return result
 
