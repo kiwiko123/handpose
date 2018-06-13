@@ -22,17 +22,19 @@ path_data = 'data/food100/'
 percentage_test = 10;
 
 # Create and/or truncate train.txt and test.txt
-file_train = open('../Dataset/train.txt', 'w')
-file_test = open('../Dataset/test.txt', 'w')
+
+DATASET_DIR = "../Dataset/"
+IMG_DIR = "ColorTiny"
+PIC_DIR = os.path.join(DATASET_DIR, IMG_DIR) 
+
+file_train = open(DATASET_DIR + 'train.txt', 'w')
+file_test = open(DATASET_DIR + 'test.txt', 'w')
 
 # Populate train.txt and test.txt
 counter = 1
 index_test = round(100 / percentage_test)
 
-# for pathAndFilename in glob.iglob(os.path.join(current_dir, "../Dataset/Color/*.jpg")):
-# for pathAndFilename in glob.iglob("../Dataset/Color/*.jpg"):
-for pathAndFilename in os.listdir("../Dataset/Color"):
-
+for pathAndFilename in os.listdir(PIC_DIR):
     if "txt" in pathAndFilename: 
         continue
     # title, ext = os.path.splitext(os.path.basename(pathAndFilename))
@@ -47,3 +49,6 @@ for pathAndFilename in os.listdir("../Dataset/Color"):
         file_train.write(pathAndFilename + "\n")
         # print(pathAndFilename + "\n")
         counter = counter + 1
+
+file_test.close()
+file_train.close()

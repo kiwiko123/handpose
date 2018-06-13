@@ -112,8 +112,10 @@ def convert_yolo_annotations(indir: str, outdir: str, padding=0, limit=0) -> Non
         annotations = json.load(infile)
 
     extension = 'jpg'
+    IMG_DIR = "ColorTiny"
+
     i = 0
-    imgFiles = os.listdir(os.path.join(indir, "Color"))
+    imgFiles = os.listdir(os.path.join(indir, IMG_DIR))
 
     # for name, data in annotations.items():
     for name in imgFiles:
@@ -123,7 +125,7 @@ def convert_yolo_annotations(indir: str, outdir: str, padding=0, limit=0) -> Non
         annotations.get(fileName + "_L") and annotationsForFile.append(annotations.get(fileName + "_L"))
         annotations.get(fileName + "_R") and annotationsForFile.append(annotations.get(fileName + "_R"))
 
-        write_path = pathlib.Path('{0}/Color/{1}.txt'.format(indir, fileName)) 
+        write_path = pathlib.Path('{:}/{:}/{:}.txt'.format(indir, IMG_DIR, fileName)) 
         yoloOutputFile = open(write_path, "w")
 
         for index, data in enumerate(annotationsForFile):
