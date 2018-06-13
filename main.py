@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import torch
-from detector import train_net, HandDetectorNet
+from detector import train_net, YOLOv2Net, bounding_box
 from preprocess import create_background_subtractor
 
 
@@ -39,7 +39,7 @@ def normalize_image_for_net(image: np.ndarray, background_subtractor: cv2.Backgr
     return result
 
 
-def create_net(weight_file='./cache/state.pkl') -> HandDetectorNet:
+def create_net(weight_file='default') -> YOLOv2Net:
     """
     Prompts user through console input whether or not to load saved weights.
     Enter 'y' to load, or 'n' to re-train from scratch.
@@ -49,14 +49,14 @@ def create_net(weight_file='./cache/state.pkl') -> HandDetectorNet:
     """
     response = input('Load learned weights?: ').strip().upper()
     if response == 'Y':
-        return HandDetectorNet(restore=True, outfile=weight_file)
+        return YOLOv2Net(restore=True, weight_file=weight_file)
     elif response == 'N':
         return train_net()
     else:
         raise ValueError('invalid response "{0}"'.format(response))
 
 
-def prompt_for_save(net: HandDetectorNet) -> None:
+def prompt_for_save(net: YOLOv2Net) -> None:
     """
     Prompts user through console input whether or not to save the learned weights.
     Enter 'y' to save, or anything else to discard.
@@ -129,5 +129,44 @@ def _visualize_background_subtraction(**background_subtractor_kwargs) -> None:
     cv2.destroyAllWindows()
 
 
+def track(predict_every=5) -> None:
+    dimensions = (416, 416)
+    i = 1
+    net = create_net()
+    capturer = cv2.VideoCapture(0)
+
+    while capturer.isOpened():
+        ret, frame = capturer.read()
+        frame = cv2.resize(frame, dsize=dimensions)
+
+        if i % predict_every == 0:
+            image = np.reshape(frame, (3,) + dimensions)
+            image = torch.Tensor(image)
+            image.unsqueeze_(0)
+
+            outputs = net(image)
+            p = bounding_box(outputs)
+
+            confidence, coordinates = p[0]
+            print(confidence)
+            if confidence > 0.5:
+                tl_x, tl_y, br_x, br_y = [int(c) for c in coordinates]
+                green = (0, 255, 0)
+                color = frame
+                color = np.reshape(color, (416, 416, 3))
+                cv2.rectangle(color, (tl_x, tl_y), (br_x, br_y), green, 1)
+                frame = color
+
+        cv2.imshow('frame', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+        i += 1
+
+    capturer.release()
+    cv2.destroyAllWindows()
+
+
 if __name__ == '__main__':
-    track_background_subtract(predict_every=5)
+    # _visualize_background_subtraction()
+    # track_background_subtract(predict_every=5)
+    track(predict_every=1)
