@@ -184,16 +184,17 @@ def draw_bounding_boxes(indir: str, outdir: str, padding=0, limit=0) -> None:
 
 if __name__ == '__main__':
     pass
+
     ###
     ### Make a directory of images grayscale.
     ###
-    # preprocess_grayscale('./data/preprocessed_hw3/train/hand', './data/preprocessed_hw3/train/hand')
+    # preprocess_grayscale('./data/playground', './data/playground')
 
     ###
     ### Crop Assignment 3 images. No need to run this more than once!
     ###
     # crop_hw3_images('./data/Dataset', './data/preprocessed_hw3/hand', padding=5, limit=500)
-    draw_bounding_boxes("data/Dataset", "data/preprocessed_hw3/train", padding=10, limit=100)
+    # draw_bounding_boxes("./data/Dataset", "./data/preprocessed_hw3/test/hand", padding=12, limit=25)
 
 
     ##
@@ -205,23 +206,5 @@ if __name__ == '__main__':
     #
     # background_image = cv2.imread(str(background_image_path), 0)
     # training_images = pathlib.Path('./data/custom/hand')
-    # preprocessed_images = pathlib.Path('./data/preprocessed/hand')
+    # preprocessed_images = pathlib.Path('./data/preprocessed')
     # preprocess_background_subtraction(background_image, training_images, preprocessed_images)
-
-    # root = pathlib.Path('./data/preprocessed_hw3/hand')
-    # for image_file in root.iterdir():
-    #     background = Image.open(str(image_file))
-    #     background = background.convert('L')
-    #     width, height = background.size
-    #     background = background.crop((width * .9, height * .1, width, height))
-    #     background = np.asarray(background)
-    #     background = cv2.resize(background, dsize=(64, 64))
-    #
-    #     model = create_background_subtractor()
-    #     model.apply(background)
-    #
-    #     image = cv2.imread(str(image_file), 0)
-    #     image = cv2.resize(image, dsize=(64, 64))
-    #     mask = model.apply(image)
-    #     cv2.imshow('frame', mask)
-    #     cv2.waitKey(0)

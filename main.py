@@ -1,138 +1,15 @@
 import cv2
 import numpy as np
 import torch
-from detector import train_net, YOLOv2Net, bounding_box
-from preprocess import create_background_subtractor
+from detector import YOLOv2Net, bounding_box
 
-
-def capture_background_image(capturer: cv2.VideoCapture, dimensions=(64, 64), skip=15) -> np.ndarray:
-    """
-    Captures and returns a single, still image from the webcam to use as the background.
-    Use this image as the initial training point for a cv2.BackgroundSubtractorMOG2 object.
-    `skip` is the number of frames to skip before capturing the image, to allow for pre-focusing.
-    """
-    for i in range(skip):
-        capturer.read()
-    ret, frame = capturer.read()
-    image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    # image = cv2.resize(image, dsize=dimensions)
-    return image
-
-
-def normalize_image_for_net(image: np.ndarray, background_subtractor: cv2.BackgroundSubtractorMOG2, dimensions=(64, 64)) -> torch.Tensor:
-    """
-    Prepares `image` to be passed to an `nn.Module`-like object.
-    `image` is a numpy array that can be obtained through an OpenCV operation (i.e., `cv2.imread`).
-    `background_subtractor` is the BackgroundSubtractorMOG2 object that has already been trained on a single background image.
-    `dimensions` specify how much to resize `image`.
-    Ensures `image` has 3 channels, and converts it to a Tensor object.
-    Returns the Tensor.
-    """
-    result = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    result = cv2.resize(result, dsize=dimensions)
-    result = background_subtractor.apply(result)
-    result = np.stack((result,) * 3, -1)  # make image have 3 channels (necessary for 1st convolutional layer)
-    result = np.reshape(result, (3,) + dimensions)
-    result = torch.Tensor(result)
-    result.unsqueeze_(0)
-
-    return result
-
-
-def create_net(weight_file='default') -> YOLOv2Net:
-    """
-    Prompts user through console input whether or not to load saved weights.
-    Enter 'y' to load, or 'n' to re-train from scratch.
-    Entering anything else raises a ValueError.
-
-    Returns the HandDetectorNet object.
-    """
-    response = input('Load learned weights?: ').strip().upper()
-    if response == 'Y':
-        return YOLOv2Net(restore=True, weight_file=weight_file)
-    elif response == 'N':
-        return train_net()
-    else:
-        raise ValueError('invalid response "{0}"'.format(response))
-
-
-def prompt_for_save(net: YOLOv2Net) -> None:
-    """
-    Prompts user through console input whether or not to save the learned weights.
-    Enter 'y' to save, or anything else to discard.
-    If save, `net` is updated.
-    """
-    response = input('Save learned weights?: ').strip().upper()
-    if response == 'Y':
-        net.save()
-
-
-def track_background_subtract(predict_every=5) -> None:
-    """
-    Uses the webcam to track live video.
-    Predicts whether or not a hand is detected in each frame.
-    If a hand is predicted, prints "hand" to the console, or "other" if not.
-    `predict_every` determines the number of frames to skip before making a prediction.
-
-    Press 'q' to end webcam capture.
-    """
-    ground_truths = ('hand', 'other')
-    dimensions = (64, 64)
-    i = 1
-    net = create_net()
-    capturer = cv2.VideoCapture(0)
-    model = create_background_subtractor()
-    background = capture_background_image(capturer)
-    model.apply(background)
-
-    while capturer.isOpened():
-        ret, frame = capturer.read()
-
-        if i % predict_every == 0:
-            image = normalize_image_for_net(frame, model, dimensions=dimensions)
-            outputs = net(image)
-            _, predicted = torch.max(outputs, 1)
-            prediction = predicted[0].item()
-            print(ground_truths[prediction])
-
-        cv2.imshow('frame', frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-        i += 1
-
-    capturer.release()
-    cv2.destroyAllWindows()
-    print()
-    prompt_for_save(net)
-
-
-def _visualize_background_subtraction(**background_subtractor_kwargs) -> None:
-    """
-    Helper function to visualize how background subtraction works.
-    Tweak `background_subtractor_kwargs` to see how things are changed.
-    """
-    capturer = cv2.VideoCapture(0)
-    background_subtractor = create_background_subtractor(**background_subtractor_kwargs)
-    background = capture_background_image(capturer)
-    background_subtractor.apply(background)
-
-    while capturer.isOpened():
-        ret, frame = capturer.read()
-        image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        image = background_subtractor.apply(image)
-
-        cv2.imshow('frame', image)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    capturer.release()
-    cv2.destroyAllWindows()
 
 
 def track(predict_every=5) -> None:
     dimensions = (416, 416)
+    channels = 1
     i = 1
-    net = create_net()
+    net = YOLOv2Net(restore=True)
     capturer = cv2.VideoCapture(0)
 
     while capturer.isOpened():
@@ -140,21 +17,22 @@ def track(predict_every=5) -> None:
         frame = cv2.resize(frame, dsize=dimensions)
 
         if i % predict_every == 0:
-            image = np.reshape(frame, (3,) + dimensions)
+            image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            image = np.reshape(image, (channels,) + dimensions)
             image = torch.Tensor(image)
             image.unsqueeze_(0)
 
             outputs = net(image)
-            p = bounding_box(outputs)
+            predictions = bounding_box(outputs)
 
-            confidence, coordinates = p[0]
-            print(confidence)
-            if confidence > 0.5:
+            entry = predictions[0]
+            confidence = entry.confidence
+            coordinates = entry.bounding_box
+            if confidence > 0.45:
                 tl_x, tl_y, br_x, br_y = [int(c) for c in coordinates]
                 green = (0, 255, 0)
-                color = frame
-                color = np.reshape(color, (416, 416, 3))
-                cv2.rectangle(color, (tl_x, tl_y), (br_x, br_y), green, 1)
+                color = np.reshape(frame, (416, 416, 3))
+                cv2.rectangle(color, (tl_x, tl_y), (br_x, br_y), green, 2)
                 frame = color
 
         cv2.imshow('frame', frame)
@@ -167,6 +45,4 @@ def track(predict_every=5) -> None:
 
 
 if __name__ == '__main__':
-    # _visualize_background_subtraction()
-    # track_background_subtract(predict_every=5)
     track(predict_every=1)

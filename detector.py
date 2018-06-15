@@ -1,81 +1,144 @@
 import collections
 import cv2
+import math
 import numpy as np
+import os
 import pathlib
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data as data
-import torchvision
-from torchvision import transforms
-from PIL import ImageFile
-ImageFile.LOAD_TRUNCATED_IMAGES = True  # avoid error "OSError: broken data stream when reading image file"
 import scipy.special
-from dataset import BoundedHandsDataset
+from PIL import ImageFile
+from torchvision import transforms
+from dataset import Assignment3Dataset, HAND, OTHER
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True  # avoid error "OSError: broken data stream when reading image file"
+ANCHORS = [1.08, 1.19, 3.42, 4.41, 6.63, 11.38, 9.42, 5.11, 16.62, 10.52]
+
+
+class Prediction:
+    """
+    Convenience class to encompass prediction data.
+    """
+    def __init__(self, confidence: float, bounding_box: (int,) * 4, prediction: int, grid_x: int, grid_y: int):
+        self.confidence = confidence
+        self.bounding_box = bounding_box
+        self.prediction = prediction
+        self.grid_x = grid_x
+        self.grid_y = grid_y
+
+    def __iter__(self):
+        yield (self.confidence, self.bounding_box)
 
 
 
 class SaveableNet(nn.Module):
     """
-    Save/load learned weights from/to pickled output files.
+    Save/load learned weights to/from pickled output files.
     In derived classes, `__init__` methods must be structured as follows:
-        def __init__(self, ...):
-            nn.Module.__init__(self, restore=False, outfile='default')
+
+    1) `nn.Module.__init__` must be invoked first.
+    2) `SaveableNet.__init__` requires the architecture to be defined before it can run.
+
+    For example:
+
+        def __init__(self, restore=False, weight_file='default'):
+            nn.Module.__init__(self, restore=restore, weight_file=weight_file)
             #
             # implementation...
             #
             SaveableNet.__init__(self)
-
-    `nn.Module.__init__` must be invoked first.
-    `SaveableNet.__init__` requires the architecture to be defined before it can run.
     """
     def __init__(self, restore=False, weight_file='default'):
         """
         Initialize a SaveableNet object.
         If `restore=True`, attempts to load `weight_file`'s learned weights.
         If `weight_file='default'`, it will save to './cache/{CLASS_NAME}_state.pkl'.
+
+        If the directory specified by weight_file does not exist, it will be created automatically.
         """
         if weight_file == 'default':
             weight_file = './cache/{0}_state.pkl'.format(type(self).__name__)
+
         weight_file_path = pathlib.Path(weight_file)
+        if not weight_file_path.parent.is_dir():
+            os.makedirs(str(weight_file_path.parent))
+
+        self.restore = restore
         self._weight_file_path = weight_file_path
         if restore:
-            if not weight_file_path.is_file():
-                raise TypeError('"{0}" is not a valid file'.format(weight_file))
-            with self._weight_file_path.open('rb') as infile:
-                self.load(infile)
+            self.load()
 
-    def save(self) -> None:
+
+    def save(self, to='default') -> None:
+        """
+        Saves the learned weights into a pickled output file, specified by `to`.
+        If `to='default'`, then the file specified in __init__ is used.
+        """
+        out = self._weight_file_path if to == 'default' else pathlib.Path(to)
+        if not out.is_file():
+            raise ValueError('{0} is not a valid file'.format(out))
+
         state = self.state_dict()
-        with self._weight_file_path.open('wb') as outfile:
+        with out.open('wb') as outfile:
             torch.save(state, outfile)
 
-    def load(self, infile: open) -> None:
-        state = torch.load(infile)
-        self.load_state_dict(state)
+
+    def load(self, from_='default') -> None:
+        """
+        Loads the learned weights from the file pointed to by 'from_'.
+        Default behavior is the same as in method `save()`.
+        """
+        in_ = self._weight_file_path if from_ == 'default' else pathlib.Path(from_)
+
+        with in_.open('rb') as infile:
+            state = torch.load(infile)
+            self.load_state_dict(state)
+
 
 
 class YOLOv2Net(SaveableNet):
     """
-    Layer         kernel  stride  output shape
+    9 layer convolutional neural network aimed at object detection.
+
+    Architecture
+    ------------
+    | Layer       | kernel | stride | output_shape |
     ---------------------------------------------
-    Input                             (416, 416, 3)
-    1. Convolution    3×3      1      (416, 416, 16)
-       MaxPooling     2×2      2      (208, 208, 16)
-    2. Convolution    3×3      1      (208, 208, 32)
-       MaxPooling     2×2      2      (104, 104, 32)
-    3. Convolution    3×3      1      (104, 104, 64)
-       MaxPooling     2×2      2      (52, 52, 64)
-    4. Convolution    3×3      1      (52, 52, 128)
-       MaxPooling     2×2      2      (26, 26, 128)
-    5. Convolution    3×3      1      (26, 26, 256)
-       MaxPooling     2×2      2      (13, 13, 256)
-    6. Convolution    3×3      1      (13, 13, 512)
-       MaxPooling     2×2      1      (13, 13, 512)
-    7. Convolution    3×3      1      (13, 13, 1024)
-    8. Convolution    3×3      1      (13, 13, 1024)
-    9. Convolution    1×1      1      (13, 13, 125)
+    Input                             (3, 416, 416)
+    1. convolution    3×3      1      (16, 416, 416)
+       max pool       2×2      2      (16, 208, 208)
+       batch norm                     (16, 208, 208)
+       leaky ReLU                     (16, 208, 208)
+    2. convolution    3×3      1      (32, 208, 208)
+       max pool       2×2      2      (32, 104, 104)
+       batch norm                     (32, 104, 104)
+       leaky ReLU                     (32, 104, 104)
+    3. convolution    3×3      1      (64, 104, 104)
+       max pool       2×2      2      (64, 52, 52)
+       batch norm                     (64, 52, 52)
+       leaky ReLU                     (64, 52, 52)
+    4. convolution    3×3      1      (128, 52, 52)
+       max pool       2×2      2      (128, 26, 26)
+       batch norm                     (128, 26, 26)
+       leaky ReLU                     (128, 26, 26)
+    5. convolution    3×3      1      (256, 26, 26)
+       max pool       2×2      2      (256, 14, 14)
+       batch norm                     (256, 14, 14)
+       leaky ReLU                     (256, 14, 14)
+    6. convolution    3×3      1      (512, 14, 14)
+       max pool       2×2      1      (512, 13, 13)
+       batch norm                     (512, 13, 13)
+       leaky ReLU                     (512, 13, 13)
+    7. convolution    3×3      1      (1024, 13, 13)
+       batch norm                     (1024, 13, 13)
+       leaky ReLU                     (1024, 13, 13)
+    8. convolution    3×3      1      (13, 13, 1024)
+       batch norm                     (1024, 13, 13)
+       leaky ReLU                     (1024, 13, 13)
+    9. convolution    1×1      1      (35, 13, 13)
     ---------------------------------------------
 
     Source:
@@ -84,16 +147,13 @@ class YOLOv2Net(SaveableNet):
     def __init__(self, restore=False, weight_file='default'):
         """
         padding: (kernel_size - 1) // 2
-        :param restore:
-        :param weight_file:
         """
         nn.Module.__init__(self)
         self.mode = 'test'
+        self._leaky_relu_slope = 0.1
+        in_channels = 1  # 1 for grayscale, 3 for RGB
 
-        ###
-        ### Architecture Definition
-        ###
-        self.conv_one = nn.Conv2d(3, 16, 3, stride=1, padding=1)
+        self.conv_one = nn.Conv2d(in_channels, 16, 3, stride=1, padding=1)
         self.max_pool_one = nn.MaxPool2d(2, stride=2)
         self.batch_norm_one = nn.BatchNorm2d(16)
 
@@ -106,7 +166,7 @@ class YOLOv2Net(SaveableNet):
         self.conv_four = nn.Conv2d(64, 128, 3, stride=1, padding=1)
         self.batch_norm_four = nn.BatchNorm2d(128)
 
-        self.conv_five = nn.Conv2d(128, 256, 3, stride=1, padding=2)    # padding=1 ???
+        self.conv_five = nn.Conv2d(128, 256, 3, stride=1, padding=2)
         self.batch_norm_five = nn.BatchNorm2d(256)
 
         self.conv_six = nn.Conv2d(256, 512, 3, stride=1, padding=1)
@@ -114,6 +174,8 @@ class YOLOv2Net(SaveableNet):
         self.batch_norm_six = nn.BatchNorm2d(512)
 
         self.conv_seven = nn.Conv2d(512, 1024, 3, stride=1, padding=1)
+        self.batch_norm_seven = nn.BatchNorm2d(1024)
+
         self.conv_eight = nn.Conv2d(1024, 1024, 3, stride=1, padding=1)
         self.batch_norm_eight = nn.BatchNorm2d(1024)
 
@@ -131,43 +193,47 @@ class YOLOv2Net(SaveableNet):
         x = self.conv_one(x)
         x = self.max_pool_one(x)
         x = self.batch_norm_one(x)
-        x = F.leaky_relu(x)
+        x = F.leaky_relu(x, negative_slope=self._leaky_relu_slope)
 
         # (16, 208, 208)
         x = self.conv_two(x)
         x = self.max_pool_one(x)
         x = self.batch_norm_two(x)
-        x = F.leaky_relu(x)
+        x = F.leaky_relu(x, negative_slope=self._leaky_relu_slope)
 
         # (32, 104, 104)
         x = self.conv_three(x)
         x = self.max_pool_one(x)
         x = self.batch_norm_three(x)
-        x = F.leaky_relu(x)
+        x = F.leaky_relu(x, negative_slope=self._leaky_relu_slope)
 
         # (64, 52, 52)
         x = self.conv_four(x)
         x = self.max_pool_one(x)
         x = self.batch_norm_four(x)
-        x = F.leaky_relu(x)
+        x = F.leaky_relu(x, negative_slope=self._leaky_relu_slope)
 
         # (128, 26, 26)
         x = self.conv_five(x)
         x = self.max_pool_one(x)
         x = self.batch_norm_five(x)
-        x = F.leaky_relu(x)
+        x = F.leaky_relu(x, negative_slope=self._leaky_relu_slope)
 
         # (256, 14, 14)
         x = self.conv_six(x)
         x = self.max_pool_six(x)
         x = self.batch_norm_six(x)
-        x = F.leaky_relu(x)
+        x = F.leaky_relu(x, negative_slope=self._leaky_relu_slope)
 
         # (512, 13 13)
         x = self.conv_seven(x)
+        x = self.batch_norm_seven(x)
+        x = F.leaky_relu(x, negative_slope=self._leaky_relu_slope)
+
+        # (1024, 13, 13)
         x = self.conv_eight(x)
         x = self.batch_norm_eight(x)
-        x = F.leaky_relu(x)
+        x = F.leaky_relu(x, negative_slope=self._leaky_relu_slope)
 
         # (1024, 13, 13)
         x = self.conv_nine(x)
@@ -179,19 +245,20 @@ class YOLOv2Net(SaveableNet):
         return x
 
 
+
 def load_image_directory(training_dir: str, test_dir: str, batch_size: int, dimensions: (int, int)) -> (data.Dataset, data.DataLoader, data.Dataset, data.DataLoader):
     mean = [0.485, 0.456, 0.406]
     std = [0.229, 0.224, 0.225]
     transform = transforms.Compose([transforms.Resize(dimensions),
+                                    transforms.Grayscale(num_output_channels=1),
                                     transforms.ToTensor(),])
                                     # transforms.Normalize(mean, std)])
 
-    # training_set = torchvision.datasets.ImageFolder(training_dir, transform=transform)
-    training_set = BoundedHandsDataset(training_dir, './data/Dataset/annotation.json', batch_size, dimensions, transform=transform)
-    training_loader = data.DataLoader(training_set, batch_size=batch_size, shuffle=False, num_workers=2)
+    training_set = Assignment3Dataset(training_dir, './data/Dataset/annotation.json', batch_size, dimensions, transform=transform)
+    training_loader = data.DataLoader(training_set, batch_size=batch_size, shuffle=True, num_workers=2)
 
-    test_set = torchvision.datasets.ImageFolder(test_dir, transform=transform)
-    test_loader = data.DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=1)
+    test_set = Assignment3Dataset(test_dir, './data/Dataset/annotation.json', batch_size, dimensions, transform=transform)
+    test_loader = data.DataLoader(test_set, batch_size=batch_size, shuffle=True, num_workers=1)
 
     return training_set, training_loader, test_set, test_loader
 
@@ -211,7 +278,7 @@ def normalize_tx(x: float, threshold=1e-10) -> float:
     return x
 
 
-def reconstruct_ground_truth_labels(features: torch.Tensor, signed_regions: [[float]], ground_truth_bounding_boxes: (float,), threshold=1e-10) -> torch.Tensor:
+def reconstruct_ground_truth_labels(features: torch.Tensor, signed_regions: [[float]], ground_truth_bounding_boxes: (float,), ground_truth_classes: torch.Tensor, threshold=1e-10) -> torch.Tensor:
     """
     Alters `features` by comparing its incorrect predictions with the ground-truth labels.
     Ensure that `features` is a `clone()` of the net's output.
@@ -219,7 +286,6 @@ def reconstruct_ground_truth_labels(features: torch.Tensor, signed_regions: [[fl
 
     Returns the updates features tensor.
     """
-    anchors = [1.08, 1.19, 3.42, 4.41, 6.63, 11.38, 9.42, 5.11, 16.62, 10.52]
     batch_size = features.size(0)
     features = features.data.numpy()
 
@@ -237,42 +303,52 @@ def reconstruct_ground_truth_labels(features: torch.Tensor, signed_regions: [[fl
 
                     # if the "grid" at (cx, cy) does not contain a hand,
                     # assign it a value of -2.5.
-                    # Sigmoid(-2.5) ~ 0.07, indicating a very low confidence.
-                    if signed_regions[batch, cx, cy] == 0:
-                        features[batch, channel + 4, cx, cy] = -10
-                        # features[batch, channel + 4, cx, cy] = -2.5
+                    # sigmoid(-2.5) ~ 0.07, indicating a very low confidence.
+                    if ground_truth_classes[batch] == OTHER or signed_regions[batch, cx, cy] == 0:
+                        # features[batch, channel + 4, cx, cy] = -10
+                        features[batch, channel + 4, cx, cy] = -2.5
+                        features[batch, channel + 5 + HAND] = -1.1
+                        features[batch, channel + 5 + OTHER] = 1.1
 
                     # otherwise, the bounding box is around the grid at (cx, cy).
                     else:
-                        features[batch, channel + 4, cx, cy] = 7.5
-                        # features[batch, channel + 4, cx, cy] = 7.5
+                        # this (tc) represents the confidence score that some object is within the bounding box.
+                        # 1.1 is chosen because sigmoid(1.1) ~ 0.75
+                        features[batch, channel + 4, cx, cy] = 1.1
 
                         # the logit function is the inverse of the sigmoid function.
                         # reverse-engineer the calculations done in `bounding_box()` based on the ground-truth coordinates.
                         tx = mid_x / 32
                         tx -= cx
                         tx = normalize_tx(tx, threshold=threshold)
-                        features[batch, channel + 0, cx, cy] = scipy.special.logit(tx)
+                        tx = scipy.special.logit(tx)
+                        features[batch, channel, cx, cy] = tx
 
                         ty = mid_y / 32
                         ty -= cy
                         ty = normalize_tx(ty, threshold=threshold)
-                        features[batch, channel + 1, cx, cy] = scipy.special.logit(ty)
+                        ty = scipy.special.logit(ty)
+                        features[batch, channel + 1, cx, cy] = ty
+
+                        if any(math.isnan(i) or i == math.inf for i in (tx, ty)):
+                            raise ValueError
 
                         # similarly, the natural logarithm is the inverse of the exponential function,
                         # which is applied to `tw` and `th` in `bounding_box()`.
                         tw = width / 32
-                        tw /= anchors[2 * b]
+                        tw /= ANCHORS[2 * b]
                         features[batch, channel + 2, cx, cy] = np.log(tw)
 
                         th = height / 32
-                        th /= anchors[2 * b + 1]
+                        th /= ANCHORS[2 * b + 1]
                         features[batch, channel + 3, cx, cy] = np.log(th)
+                        features[batch, channel + 5 + HAND] = 1.1
+                        features[batch, channel + 5 + OTHER] = -1.1
 
     return torch.Tensor(features)
 
 
-def bounding_box(outputs: torch.Tensor) -> [(float, (int,))]:
+def bounding_box(outputs: torch.Tensor) -> [Prediction]:
     """
     Computes the predicted confidence score and bounding box coordinates from `outputs`.
     `outputs` is the Tensor predicted by a net.
@@ -287,7 +363,7 @@ def bounding_box(outputs: torch.Tensor) -> [(float, (int,))]:
     Source:
     http://machinethink.net/blog/object-detection-with-yolo/
     """
-    anchors = [1.08, 1.19, 3.42, 4.41, 6.63, 11.38, 9.42, 5.11, 16.62, 10.52]
+
     predictions = collections.deque()
     most_accurate = ()
     batches = outputs.size(0)
@@ -304,10 +380,10 @@ def bounding_box(outputs: torch.Tensor) -> [(float, (int,))]:
                     th = features[channel + 3, cx, cy]
                     tc = features[channel + 4, cx, cy]
 
-                    x = (cx + F.sigmoid(tx)) * 32
-                    y = (cy + F.sigmoid(ty)) * 32
-                    w = np.exp(tw.item()) * anchors[2 * b] * 32
-                    h = np.exp(th.item()) * anchors[2 * b + 1] * 32
+                    x = (cx + F.sigmoid(tx) + 1) * 32
+                    y = (cy + F.sigmoid(ty) + 1) * 32
+                    w = np.exp(tw.item()) * ANCHORS[2 * b] * 32
+                    h = np.exp(th.item()) * ANCHORS[2 * b + 1] * 32
                     c = F.sigmoid(tc)
 
                     x, y, c = x.item(), y.item(), c.item()
@@ -316,18 +392,20 @@ def bounding_box(outputs: torch.Tensor) -> [(float, (int,))]:
                     best_score, prediction = [t.item() for t in torch.max(classes, dim=0)]
                     confidence = best_score * c
 
-                    if confidence > 0:
-                        x -= w / 2
-                        y -= h / 2
+                    # if prediction == OTHER:
+                    #     confidence /= 10
 
-                        if 0 <= x < 416 and 0 <= y < 416:
-                            entry = (confidence, (x, y, x + w, y + h))
-                            if most_accurate:
-                                most_accurate = max(most_accurate, entry, key=lambda e: e[0])
-                            else:
-                                most_accurate = entry
-                            predictions.append(entry)
-                            predictions.append((confidence, (x, y, x + w, y + h)))
+                    # if prediction == HAND: # confidence > 0:
+                    x -= w / 2
+                    y -= h / 2
+
+                    if 0 <= x < 416 and 0 <= y < 416:
+                        entry = Prediction(confidence, (x, y, x + w, y + h), prediction, cx, cy)
+                        if most_accurate:
+                            most_accurate = max(most_accurate, entry, key=lambda e: (e.confidence))
+                        else:
+                            most_accurate = entry
+                        predictions.append(entry)
 
     if most_accurate:
         predictions.appendleft(most_accurate)
@@ -348,15 +426,18 @@ def train(classifier: nn.Module, loader: data.DataLoader, criterion: nn.modules.
             images = data['image']
             bounding_box_coords = data['bounding_box']
             signed_regions = data['signed_regions']
+            ground_truth_class = data['class']
 
             outputs = classifier(images)
             features = outputs.clone()
             features = features.view(-1, 35, 13, 13)
-            labels = reconstruct_ground_truth_labels(features, signed_regions, bounding_box_coords)
+            labels = reconstruct_ground_truth_labels(features, signed_regions, bounding_box_coords, ground_truth_class)
             labels = labels.view(-1, 35 * 13 * 13)
 
             optimizer.zero_grad()
             loss = criterion(outputs.float(), labels)
+            if loss == math.inf:
+                break
             loss.backward()
             optimizer.step()
 
@@ -366,58 +447,99 @@ def train(classifier: nn.Module, loader: data.DataLoader, criterion: nn.modules.
                 running_loss = 0.0
 
 
-
-def train_net(net: SaveableNet, batch_size: int, epochs=10, dimensions=(416, 416)) -> SaveableNet:
+def validate(classifier: nn.Module, loader: data.DataLoader, batch_size: int) -> None:
     """
-    Quick function to train a new net.
-    Assesses loss through mean-squared error (MSE).
-    Optimizes through stochastic gradient descent (SGD),
-    which we determined performs much better than Adam.
-
-    Returns `net`, trained.
+    Validation of the classifier. Pass in the test loader as the second argument.
+    Images will display to the screen - press any button to continue.
     """
-    training_set, training_loader, test_set, test_loader = load_image_directory('data/preprocessed_hw3/train', 'data/preprocessed_hw3/test', batch_size=batch_size, dimensions=dimensions)
+    for batch in range(batch_size):
+        for i, data in enumerate(loader):
+            image = data['image']
+            outputs = classifier(image)
+            predictions = bounding_box(outputs)
+            best_prediction = predictions[0]
 
-    criterion = nn.MSELoss()
-    optimizer = optim.SGD(net.parameters(), lr=1e-5, momentum=0.9)
-    # optimizer = optim.Adam(net.parameters(), lr=1e-5)
-    train(net, training_loader, criterion=criterion, optimizer=optimizer, epochs=epochs, print_every=1)
-
-    return net
+            coordinates = best_prediction.bounding_box
+            color = image.data.numpy()
+            n, c, b, w = color.shape
+            color = np.reshape(color, (n, b, w, c))
+            color = color[batch]
+            tl_x, tl_y, br_x, br_y = [int(c) for c in coordinates]
+            red = (0, 0, 255)
+            cv2.rectangle(color, (tl_x, tl_y), (br_x, br_y), red, 1)
+            print('Predicted coordinates:', (tl_x, tl_y), (br_x, br_y))
+            cv2.imshow('frame', color)
+            cv2.waitKey(0)
 
 
 
 if __name__ == '__main__':
+    ###
+    ### Hyperparameters
+    ###
     batch_size = 16
     epochs = 8
     dimensions = (416, 416)
+    learning_rate = 1e-3
+    training_dir = './data/preprocessed_hw3/train_with_other'
+    test_dir = './data/preprocessed_hw3/test/hand'
+
+    training_set, training_loader, test_set, test_loader = load_image_directory(training_dir, test_dir,
+                                                                                batch_size=batch_size, dimensions=dimensions)
+
+    ###
+    ### Set up the model
+    ###
     model = YOLOv2Net()
     model.mode = 'train'
-    net = train_net(model, batch_size, epochs=epochs, dimensions=dimensions)
-    net.save()
 
-    # net = YOLOv2Net(restore=True)
-    net.mode = 'test'
+    ###
+    ### Loss function, and optimizer
+    ###
+    criterion = nn.MSELoss()
+    optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.9, weight_decay=5e-4)
+    # optimizer = optim.Adam(net.parameters(), lr=1e-6)
 
-    image_path = './data/Dataset/Color/022_1757.jpg'
-    # image_path = '/Users/geoffreyko/OneDrive/Pictures/Camera Roll/20160729_022841530_iOS.jpg'
-    image = cv2.imread(image_path)
+    ###
+    ### Train, and save weights
+    ###
+
+    # train(model, training_loader, criterion=criterion, optimizer=optimizer, epochs=epochs, print_every=1)
+    model = YOLOv2Net(restore=True)
+    if not model.restore:
+        model.save()
+    model.mode = 'test'
+
+
+    ###
+    ### User-study test
+    ###
+    image_path = './data/Dataset/Color/083_2567.jpg'
+
+    in_channels = 1
+    image = cv2.imread(image_path, 0)
     image = cv2.resize(image, dsize=dimensions)
-    image = np.reshape(image, (3,) + dimensions)
+    image = np.reshape(image, (in_channels,) + dimensions)
     image = torch.Tensor(image)
     image.unsqueeze_(0)
 
-    outputs = net(image)
-    print(outputs)
-    p = bounding_box(outputs)
+    outputs = model(image)
+    predictions = bounding_box(outputs)
 
-    for confidence, coordinates in sorted(p, key=lambda e: e[0], reverse=True):
-    # confidence, coordinates = max(p, key=lambda e: e[0])
+    for entry in sorted(p, key=lambda e: e.confidence, reverse=True):
+        confidence = entry.confidence
+        coordinates = entry.bounding_box
         color = cv2.imread(image_path)
         color = cv2.resize(color, dsize=dimensions)
         tl_x, tl_y, br_x, br_y = [int(c) for c in coordinates]
         green = (0, 255, 0)
         cv2.rectangle(color, (tl_x, tl_y), (br_x, br_y), green, 1)
         cv2.imshow('frame', color)
-        print(confidence)
+        print(entry.prediction, confidence)
         cv2.waitKey(0)
+
+
+    ###
+    ### Validation
+    ###
+    validate(model, test_loader, batch_size)

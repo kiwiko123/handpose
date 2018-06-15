@@ -6,22 +6,27 @@ import math
 import pathlib
 from PIL import Image
 
+HAND = 0
+OTHER = 1
 
-class BoundedHandsDataset(data.Dataset):
+
+class Assignment3Dataset(data.Dataset):
     """
     Custom dataset tailored for the images from Assignment 3.
     `root` is the directory which directly houses images of hands. These must be the images denoted in `annotations_file`.
     `annotations_file` is the path to "annotation.json", included in the Assignment 3 dataset.
     Pass this dataset into a `torch.utils.data.DataLoader` object for training.
     """
+    extensions = {'.jpg', '.jpeg', '.png'}
+
     def __init__(self, root: str, annotations_file: str, batch_size: int, dimensions: (int, int), transform=None):
         with open(annotations_file) as infile:
             self._annotations = json.load(infile)
         path = pathlib.Path(root)
         self._annotations_list = []
         for image_file in path.iterdir():
-            if image_file.stem in self._annotations:
-                self._annotations_list.append({image_file.stem: self._annotations[image_file.stem]})
+            if image_file.is_file() and image_file.suffix.lower() in self.extensions:
+                self._annotations_list.append({image_file: self._annotations.get(image_file.stem, [])})
 
         self._root = pathlib.Path(root)
         self._batch_size = batch_size
@@ -34,27 +39,27 @@ class BoundedHandsDataset(data.Dataset):
 
 
     def __getitem__(self, index: int) -> {str: np.ndarray}:
-        extension = 'jpg'
-        info = self._annotations_list[index]
-        assert len(info) == 1, 'expected {image_name: [coordinates]}'
-        image_name, coordinates = info.popitem()
-        image_path = '{0}/{1}.{2}'.format(self._root, image_name, extension)
-        image = Image.open(image_path)
+        data = self._annotations_list[index]
+        assert len(data) == 1, 'expected {image_name: {"coordinates": [coordinates], "path": xxx}'
+        image_path, coordinates = data.popitem()
+        image = Image.open(str(image_path))
 
         # if image is None:
         #     raise ValueError('failed to read image file at "{0}"'.format(image_path))
 
-        ground_truth_bounding_box = self._get_ground_truth_bounding_box(image, image_name)
-        signed_regions = self._sign_regions(image, image_name)
+        ground_truth_bounding_box = self._get_ground_truth_bounding_box(image, image_path.stem)
+        signed_regions = self._sign_regions(image, image_path.stem)
+        ground_truth_class = HAND if image_path.stem in self._annotations else OTHER
+
         if self.transform:
             image = self.transform(image)
 
-        labels = torch.Tensor([0] * self._batch_size)
         result = {'image': image,
                   # 'image_path': pathlib.Path(image_path),
                   'bounding_box': ground_truth_bounding_box,
                   'annotations': coordinates,
-                  'signed_regions': signed_regions}
+                  'signed_regions': signed_regions,
+                  'class': ground_truth_class}
 
         return result
 
@@ -65,7 +70,12 @@ class BoundedHandsDataset(data.Dataset):
         (top-left-x, top-left-y, bottom-right-x, bottom-right-y).
 
         Coordinates are scaled using self._dimensions.
+
+        If `image_name` is not in annotations, returns an empty tuple.
         """
+        if image_name not in self._annotations:
+            return (-1, -1, -1, -1)
+
         coordinates = self._annotations[image_name]
         min_x, min_y = math.inf, math.inf
         max_x, max_y = 0, 0
@@ -98,22 +108,17 @@ class BoundedHandsDataset(data.Dataset):
         the ground-truth bounding box is located in grid (i, j).
         Grid cells that do not contain the bounding box are 0.
         """
-        width, height = self._dimensions
-        n_grid_x, n_grid_y = (13, 13)
-        tl_x, tl_y, br_x, br_y = self._get_ground_truth_bounding_box(image, image_name)
         result = np.zeros((13, 13))
 
-        range_x_start = math.floor((tl_x / width) * n_grid_x)
-        range_x_end = math.floor((br_x / width) * n_grid_x)
-        range_y_start = math.floor((tl_y / height) * n_grid_y)
-        range_y_end = math.floor((br_y / height) * n_grid_y)
-        result[range_x_start:range_x_end+1, range_y_start:range_y_end+1] = 1
+        if image_name in self._annotations:
+            width, height = self._dimensions
+            n_grid_x, n_grid_y = (13, 13)
+            tl_x, tl_y, br_x, br_y = self._get_ground_truth_bounding_box(image, image_name)
 
-        # for cx in range(13):
-        #     grid_x = cx * (416 / 13)
-        #     for cy in range(13):
-        #         grid_y = cy * (416 / 13)
-        #         if (grid_x >= tl_x and grid_y >= tl_y) and (grid_x >= br_x and grid_y <= br_y):
-        #             result[cx, cy] = 1
+            range_x_start = math.floor((tl_x / width) * n_grid_x)
+            range_x_end = math.floor((br_x / width) * n_grid_x)
+            range_y_start = math.floor((tl_y / height) * n_grid_y)
+            range_y_end = math.floor((br_y / height) * n_grid_y)
+            result[range_x_start:range_x_end+1, range_y_start:range_y_end+1] = 1
 
         return result
